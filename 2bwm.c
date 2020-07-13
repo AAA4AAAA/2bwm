@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <signal.h>
+#include <math.h>
 #include <xcb/randr.h>
 #include <xcb/xcb_keysyms.h>
 #include <xcb/xcb_icccm.h>
@@ -66,6 +67,7 @@ static void changeworkspace(const Arg *);
 static void changeworkspace_helper(const uint32_t);
 static void focusnext(const Arg *);
 static void focusnext_helper(bool);
+static void focusdir(const Arg *);
 static void sendtoworkspace(const Arg *);
 static void sendtonextworkspace(const Arg *);
 static void sendtoprevworkspace(const Arg *);
@@ -1553,6 +1555,74 @@ focusnext_helper(bool arg)
 	centerpointer(cl->id,cl);
 	setfocus(cl);
 }
+void
+focusdir(const Arg *arg)
+{
+	struct item *i;
+	struct client *c, *cl = NULL;
+	int cx, cy, x, y;
+	double mindist, dist;
+
+	if (!focuswin)
+		return;
+
+	mindist = pow(focuswin->monitor->width - 0, 2) + pow(focuswin->monitor->height - 0, 2);
+
+	if (arg->i & TWOBWM_FOCUSDIR_WEST) {
+		cx = focuswin->x;
+		cy = (focuswin->y + focuswin->height) / 2;
+		for (i = wslist[curws]; i && (c = i->data); i = i->next) {
+			x = c->x;
+			y = (c->y + c->height) / 2;
+			if (x < cx && (dist = pow(cx - x, 2) + pow(cy - y, 2)) <= mindist) {
+				mindist = dist;
+				cl = c;
+			}
+		}
+	}
+	if (arg->i & TWOBWM_FOCUSDIR_EAST) {
+		cx = focuswin->x + focuswin->width;
+		cy = (focuswin->y + focuswin->height) / 2;
+		for (i = wslist[curws]; i && (c = i->data); i = i->next) {
+			x = c->x + c->width;
+			y = (c->y + c->height) / 2;
+			if (x > cx && (dist = pow(cx - x, 2) + pow(cy - y, 2)) <= mindist) {
+				mindist = dist;
+				cl = c;
+			}
+		}
+	}
+	if (arg->i & TWOBWM_FOCUSDIR_NORTH) {
+		cx = (focuswin->x + focuswin->height) / 2;
+		cy = focuswin->y;
+		for (i = wslist[curws]; i && (c = i->data); i = i->next) {
+			x = (c->x + c->width) / 2;
+			y = c->y;
+			if (y < cy && (dist = pow(cx - x, 2) + pow(cy - y, 2)) <= mindist) {
+				mindist = dist;
+				cl = c;
+			}
+		}
+	}
+	if (arg->i & TWOBWM_FOCUSDIR_SOUTH) {
+		cx = (focuswin->x + focuswin->height) / 2;
+		cy = focuswin->y + focuswin->height;
+		for (i = wslist[curws]; i && (c = i->data); i = i->next) {
+			x = (c->x + c->width) / 2;
+			y = c->y + c->height;
+			if (y > cy && (dist = pow(cx - x, 2) + pow(cy - y, 2)) <= mindist) {
+				mindist = dist;
+				cl = c;
+			}
+		}
+	}
+	if (!cl)
+		return;
+	raisewindow(cl->id);
+	centerpointer(cl->id, cl);
+	setfocus(cl);
+}
+
 /* Mark window win as unfocused. */
 void setunfocus(void)
 {
@@ -1591,6 +1661,10 @@ setfocus(struct client *client)// Set focus on window client.
 	 * to focus on windows anyway, even though this windowmanager might
 	 * be buggy. */
 	if (NULL == client) {
+		if (wslist[curws] && wslist[curws]->next) {
+			setfocus(wslist[curws]->next->data);
+			return;
+		}
 		focuswin = NULL;
 		xcb_set_input_focus(conn, XCB_NONE,
 				XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
@@ -1619,6 +1693,18 @@ setfocus(struct client *client)// Set focus on window client.
 			ewmh->_NET_ACTIVE_WINDOW, XCB_ATOM_WINDOW, 32, 1,&client->id);
 
 	/* Remember the new window as the current focused window. */
+	struct item *i;
+	struct client *c = NULL;
+	for (i = wslist[curws]; i && (c = i->data) && c->id == client->id; i = i->next);
+	if (i && i != wslist[curws]) {
+		i->prev->next = i->next;
+		if (i->next)
+			i->next->prev = i->prev;
+		i->prev = 0;
+		i->next = wslist[curws];
+		i->next->prev = i;
+		wslist[curws] = i;
+	}
 	focuswin = client;
 
 	grabbuttons(client);
@@ -2068,7 +2154,7 @@ unmaxwin(struct client *client){
 			ewmh->_NET_WM_STATE, XCB_ATOM_ATOM, 32, 0, NULL);
 }
 
-void 
+void
 maxwin(struct client *client, uint8_t with_offsets){
 	uint32_t values[4];
 	int16_t mon_x, mon_y;
@@ -2569,7 +2655,7 @@ configurerequest(xcb_generic_event_t *ev)
 			if (!client->maxed && !client->vertmaxed)
 				client->height = e->height;
 
-		
+
 		if (e->value_mask & XCB_CONFIG_WINDOW_X)
 		 	if (!client->maxed && !client->hormaxed)
 				client->x = e->x;
@@ -2914,11 +3000,15 @@ clientmessage(xcb_generic_event_t *ev)
 void
 destroynotify(xcb_generic_event_t *ev)
 {
-	struct client *cl;
-
+	struct client *cl, *c, *next = NULL;
+	struct item *i;
 	xcb_destroy_notify_event_t *e = (xcb_destroy_notify_event_t *) ev;
-	if (NULL != focuswin && focuswin->id == e->window)
+	if (NULL != focuswin && focuswin->id == e->window) {
+		for (i = wslist[curws]; i && (c = i->data) && c->id != focuswin->id; i = i->next);
+		if (i && i->next)
+			next = i->next->data;
 		focuswin = NULL;
+	}
 
 	cl = findclient( & e->window);
 
@@ -2927,6 +3017,7 @@ destroynotify(xcb_generic_event_t *ev)
 		forgetwin(cl->id);
 
 	updateclientlist();
+	setfocus(next);
 }
 
 void
