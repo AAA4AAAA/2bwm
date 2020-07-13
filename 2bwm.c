@@ -3000,15 +3000,11 @@ clientmessage(xcb_generic_event_t *ev)
 void
 destroynotify(xcb_generic_event_t *ev)
 {
-	struct client *cl, *c, *next = NULL;
-	struct item *i;
+	struct client *cl;
+
 	xcb_destroy_notify_event_t *e = (xcb_destroy_notify_event_t *) ev;
-	if (NULL != focuswin && focuswin->id == e->window) {
-		for (i = wslist[curws]; i && (c = i->data) && c->id != focuswin->id; i = i->next);
-		if (i && i->next)
-			next = i->next->data;
+	if (NULL != focuswin && focuswin->id == e->window)
 		focuswin = NULL;
-	}
 
 	cl = findclient( & e->window);
 
@@ -3017,7 +3013,6 @@ destroynotify(xcb_generic_event_t *ev)
 		forgetwin(cl->id);
 
 	updateclientlist();
-	setfocus(next);
 }
 
 void
@@ -3095,7 +3090,8 @@ void
 unmapnotify(xcb_generic_event_t *ev)
 {
 	xcb_unmap_notify_event_t *e = (xcb_unmap_notify_event_t *)ev;
-	struct client *client = NULL;
+	struct client *client = NULL, *c, *next = NULL;
+	struct item *i;
 	/*
 	 * Find the window in our current workspace list, then forget about it.
 	 * Note that we might not know about the window we got the UnmapNotify
@@ -3113,12 +3109,21 @@ unmapnotify(xcb_generic_event_t *ev)
 	client = findclient( & e->window);
 	if (NULL == client || client->ws != curws)
 		return;
-	if (focuswin!=NULL && client->id == focuswin->id)
+	if (focuswin!=NULL && client->id == focuswin->id) {
+		for (i = wslist[curws]; i && (c = i->data) && c->id != focuswin->id; i = i->next);
+		if (i && i->next)
+			next = i->next->data;
 		focuswin = NULL;
+	}
 	if (client->iconic == false)
 		forgetclient(client);
 
 	updateclientlist();
+	if (next) {
+		raisewindow(next->id);
+		centerpointer(next->id, next);
+		setfocus(next);
+	}
 }
 
 void
